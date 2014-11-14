@@ -1,7 +1,7 @@
 # Gmail Backup
 
 This is a small command-line tool that backs up your Gmail.
-It downloads your email messages as RFC822 format *.eml files, which can be opened in most email clients.
+It downloads your email messages as [RFC822](http://www.w3.org/Protocols/rfc822/) format *.eml text files, which are compatible with most email clients.
 
 
 ## Installation
@@ -9,18 +9,18 @@ It downloads your email messages as RFC822 format *.eml files, which can be open
 This requires Python 2.7.
 You can install dependencies using this command:
 
-	pip install gmailbackup
+    pip install gmailbackup
 
 
 ## Command Line Usage
 
-Download all email messages into the "email" folder:
+Download all email messages into the "email" directory:
 
-    ./gmailbackup.py -u <username> -p <password>
+    gmailbackup -u <username> -p <password>
 
-Download all email messages labeled "foo" and "bar" into their own subfolders:
+Download all email messages labeled "foo" and "bar" into their own subdirectories under "mydir":
 
-	./gmailbackup.py -u <username> -p <password> -l foo,bar
+    gmailbackup -u <username> -p <password> -l foo,bar -o mydir
 
 ## Python Usage
 
@@ -32,4 +32,5 @@ The `GmailClient` is a simple wrapper around the IMAP4 client.
 	with GmailClient() as client:
 		client.authentiate('me@gmail.com', 'mypassword')
 		client.save_mailbox('Some Label', 'path/to/downloads')
+
 
