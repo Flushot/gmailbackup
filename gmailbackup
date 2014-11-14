@@ -34,11 +34,224 @@ import argparse
 __version__ = '1.0.0'
 
 # Gmail server
-IMAP_HOST = 'imap.gmail.com'
-IMAP_PORT = 993
-DEFAULT_FOLDER = '[Gmail]/All Mail'
+DEFAULT_IMAP_HOST = 'imap.gmail.com'
+DEFAULT_IMAP_PORT = 993
+DEFAULT_LABEL = '[Gmail]/All Mail'
+DEFAULT_FORMAT = '(RFC822)'
 
-logger = logging.getLogger(__name__)
+SUCCESS = 0
+FAILURE = 1
+
+log = logging.getLogger(__name__)
+
+
+class MailboxIterator(object):
+    """
+    Iterates a mailbox, yielding tuples of (unique_message_key, raw_message_body)
+    """
+    def __init__(self, client, mailbox=DEFAULT_LABEL, search_query='ALL', format=DEFAULT_FORMAT, key=None):
+        """
+        Parameters
+        ----------
+        client : IMAP4
+            IMAP4 client to use for iteration.
+        mailbox : str
+            Name of the mailbox to open.
+        search_query : str
+            Optional search query (defaults to 'ALL')
+        key : function(message)
+            Message ID hash function
+        """
+        self._client = client
+
+        if not isinstance(mailbox, basestring):
+            raise ValueError('mailbox must be a string')
+        self.mailbox = mailbox
+
+        if not isinstance(search_query, basestring):
+            raise ValueError('search_query must be a string')
+        self.search_query = search_query
+
+        if not isinstance(format, basestring):
+            raise ValueError('format must be a string')
+        self.format = format
+
+        if key is not None:
+            if not callable(key):
+                raise ValueError('key must be callable')
+            self.key = key
+
+        self._ids = []
+        self._id_iter = None
+
+        self.reset()
+
+    def __iter__(self):
+        return self
+
+    def key(self, raw_message):
+        """
+        Parse real message ID from message.
+        Using a SHA-256 hash because message IDs may contain chars incompatible with filesystem paths.
+        """
+        if self.format != DEFAULT_FORMAT:
+            raise ValueError('key function must be set if format is not default')
+
+        message = email.message_from_string(raw_message)
+        return hashlib.sha256(message['Message-ID']).hexdigest()
+
+    def close(self):
+        """
+        Close mailbox for this iterator.
+        """
+        log.debug('Closing mailbox: %s' % self.mailbox)
+        self._client.close()
+
+    def reset(self):
+        """
+        Reset the iterator (re-opens mailbox)
+        """
+        # Close previously opened mailbox
+        if self._ids:
+            self._client.close()
+
+        # Open mailbox
+        log.debug('Opening mailbox: %s' % self.mailbox)
+        self._client.select(self.mailbox, readonly=True)
+        typ, ids = self._client.search(None, self.search_query)
+
+        # Set iterator
+        self._ids = ids[0].split()
+        self._id_iter = iter(self._ids)
+
+    def next(self):
+        """
+        Get the next message from this mailbox
+        """
+        try:
+            message_id = self._id_iter.next()
+
+            # Download message in RFC822 (*.eml file) format
+            typ, data = self._client.fetch(message_set=message_id,
+                                           message_parts=self.format)
+            raw_message = data[0][1]
+            return self.key(raw_message), raw_message
+
+        except StopIteration:
+            self.close()
+
+    def __next__(self):
+        return self.next()
+
+    @property
+    def total_messages(self):
+        """
+        Total number of messages available in this mailbox.
+        """
+        return len(self._ids)
+
+
+class GmailClientException(Exception):
+    def __init__(self, message, inner_ex):
+        super(GmailClientException, self).__init__(message, inner_ex)
+
+
+class GmailClient(object):
+    def __init__(self, host=DEFAULT_IMAP_HOST, port=DEFAULT_IMAP_PORT):
+        self.host = host
+        self.port = port
+        self._authenticated = False
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, a, b, c):
+        self.close()
+
+    def connect(self):
+        # Connect to server
+        self._client = imaplib.IMAP4_SSL(self.host, self.port)
+
+    def close(self):
+        log.info('Logging out...')
+        self._client.logout()
+
+    def authenticate(self, username, password):
+        """
+        Login to Gmail
+
+        username : str
+        password : str
+        """
+        # Determine authentication method
+        if 'AUTH=CRAM-MD5' in self._client.capabilities:
+            # Prefer CRAM-MD5 if supported
+            login_method = self._client.login_cram_md5
+        else:
+            # Fallback
+            login_method = self._client.login
+
+        # Authenticate
+        try:
+            login_method(username, password)
+            self._authenticated = True
+            log.info('Logged in as %s' % username)
+
+        except imaplib.IMAP4.error, ex:
+            # Probably a bad password
+            error = 'Authentication error: %s' % ex.message
+            log.error(error)
+            raise GmailClientException(error, ex)
+
+    @property
+    def is_authenticated(self):
+        return self._authenticated
+
+    def iter_mailbox(self, mailbox):
+        """
+        Opens a mailbox named :mailbox:, returning a MailboxIterator.
+        """
+        return iter(MailboxIterator(self._client, mailbox))
+
+    def save_mailbox(self, mailbox, output_path, resume=True):
+        """
+        Downloads and saves email messages in a :mailbox: as *.eml files in :output_path: directory.
+
+        Parameters
+        ----------
+        mailbox : str
+            Name of the mailbox to save.
+        output_path : str
+            Directory to save *.eml files to.
+        resume : bool
+            Allow resuming of interrupted downloads?
+        """
+        # Iterate messages
+        download_count = 0
+        it = self.iter_mailbox(mailbox)
+        for message_key, raw_message in it:
+
+            # Determine file name (should be unique after multiple runs)
+            email_file = os.path.join(output_path, '%s.eml' % message_key)
+            if resume and os.path.exists(email_file) and os.stat(email_file).st_size > 0:
+                log.debug('Skipping existing %s...' % email_file)
+                download_count += 1
+                continue
+
+            # Write eml file
+            with open(email_file, 'w+') as f:
+                f.write(raw_message)
+
+            download_count += 1
+            percent_complete = download_count / (it.total_messages / 100.0)
+            log.info('%s - Downloaded message %s (%.2f%% complete)' % (
+                     mailbox, message_key, percent_complete))
+
+
+def ensure_dir_exists(path):
+    if not os.path.exists(path):
+        os.mkdir(path)
 
 
 def main():
@@ -51,6 +264,10 @@ def main():
                         help='Output directory where *.eml files will be downloaded to')
     parser.add_argument('-l', '--labels', metavar='label1,labelN,...',
                         help='Comma-separated list of labels to download (when omitted, downloads all mail)')
+    parser.add_argument('--imap-host', metavar='hostname', default=DEFAULT_IMAP_HOST,
+                        help='IMAP server for Gmail (default is %s)' % DEFAULT_IMAP_HOST)
+    parser.add_argument('--imap-port', metavar='port', type=int, default=DEFAULT_IMAP_PORT,
+                        help='IMAP server port for Gmail (default is %d)' % DEFAULT_IMAP_PORT)
     parser.add_argument('--debug', action='store_true',
                         help='Enable debug mode')
     args = vars(parser.parse_args())
@@ -70,90 +287,36 @@ def main():
 
     # Directory *.eml files are stored in
     output_path = args['output_path']
-    if not os.path.exists(output_path):
-        os.mkdir(output_path)
-
-    # Connect to server
-    client = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
-
-    # Determine authentication method
-    if 'AUTH=CRAM-MD5' in client.capabilities:
-        login_method = client.login_cram_md5
-    else:
-        login_method = client.login
-
-    # Authenticate
-    try:
-        login_method(username, password)
-    except imaplib.IMAP4.error, ex:
-        logger.error('Authentication error: %s' % ex.message)
-        return 1
-
-    logger.info('Logged in as %s' % username)
+    ensure_dir_exists(output_path)
 
     try:
-        # Iterate folders
-        folders = map(lambda x: x.strip(), args.get('labels', DEFAULT_FOLDER).split(','))
-        for folder in folders:
-            logger.info('Selecting "%s" folder...' % folder)
-            client.select(folder, readonly=True)
-            try:
+        with GmailClient(args['imap_host'], args['imap_port']) as client:
+            client.authenticate(username, password)
+
+            # Iterate labels
+            labels = map(lambda x: x.strip(), args.get('labels', DEFAULT_LABEL).split(','))
+            for label in labels:
+
                 # Determine download path
-                if folder == DEFAULT_FOLDER:
-                    folder_path = 'inbox'
+                if label == DEFAULT_LABEL:
+                    label_path = 'inbox'
                 else:
-                    folder_path = folder
-                folder_output_path = os.path.join(output_path, folder_path)
-                if not os.path.exists(folder_output_path):
-                    os.mkdir(folder_output_path)
+                    label_path = label
+                label_output_path = os.path.join(output_path, label_path)
+                ensure_dir_exists(label_output_path)
 
-                # Search for messages in folder
-                message_type, messages_indices = client.search(None, 'ALL') # search for all messages
-                messages_indices = messages_indices[0].split()
+                client.save_mailbox(label, label_output_path)
 
-                # Iterate messages
-                total_messages = len(messages_indices)
-                download_count = 0
-                for message_index in messages_indices:
-                    # Download message in RFC822 (*.eml file) format
-                    message_type, message_data = client.fetch(message_set=message_index, 
-                                                              message_parts='(RFC822)')
-                    raw_message = message_data[0][1]
-
-                    # Parse real message ID from message
-                    # Using a SHA-256 hash because message IDs may contain chars incompatible with filesystem paths
-                    parsed_message = email.message_from_string(raw_message)
-                    message_key = hashlib.sha256(parsed_message['Message-ID']).hexdigest()
-
-                    # Determine file name (should be unique after multiple runs)
-                    email_file = '%s/%s.eml' % (folder_output_path, message_key)
-                    if os.path.exists(email_file) and os.stat(email_file).st_size > 0:
-                        logger.warn('Skipping %s...' % email_file)
-                        continue
-
-                    with open(email_file, 'w+') as f:
-                        f.write(raw_message)
-
-                    download_count += 1
-                    logger.info('Downloaded message %s [ %.2f%% ]' % (message_key, download_count / (total_messages / 100.0)))
-
-                return 0
-
-            finally:
-                # Close mailbox
-                logger.info('Closing mailbox...')
-                client.close()
+            return SUCCESS
 
     except KeyboardInterrupt, ex:
         if args['debug']:
+            # Full stack trace is useful
             raise ex
         else:
-            logger.warn('^C pressed. Terminating...')
+            log.warn('^C pressed. Terminating...')
 
-    finally:
-        # Logout
-        logger.info('Logging out...')
-        client.logout()
+    return FAILURE
 
 
 if __name__ == '__main__':
