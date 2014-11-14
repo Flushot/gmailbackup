@@ -1,3 +1,6 @@
+*.log
 *.pyc
 *.pyo
+*.egg
+*.egg-info/
 /email/

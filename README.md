@@ -9,7 +9,7 @@ It downloads your email messages as RFC822 format *.eml files, which can be open
 This requires Python 2.7.
 You can install dependencies using this command:
 
-	pip install -r requirements.txt
+	pip install gmail_backup
 
 
 ## Usage Examples
