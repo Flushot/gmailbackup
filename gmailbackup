@@ -27,6 +27,7 @@ import imaplib
 import logging
 import getpass
 import hashlib
+import math
 
 import argparse
 
@@ -134,11 +135,12 @@ class MailboxIterator(object):
             # Download message in RFC822 (*.eml file) format
             typ, data = self._client.fetch(message_set=message_id,
                                            message_parts=self.format)
-            raw_message = data[0][1]
+            raw_message = data[0][1]  # First message part, content portion of tuple
             return self.key(raw_message), raw_message
 
-        except StopIteration:
+        except StopIteration, ex:
             self.close()
+            raise ex
 
     def __next__(self):
         return self.next()
@@ -160,22 +162,28 @@ class GmailClient(object):
     def __init__(self, host=DEFAULT_IMAP_HOST, port=DEFAULT_IMAP_PORT):
         self.host = host
         self.port = port
+        self._connected = False
         self._authenticated = False
 
     def __enter__(self):
         self.connect()
         return self
 
-    def __exit__(self, a, b, c):
+    def __exit__(self, typ, value, tb):
         self.close()
 
     def connect(self):
         # Connect to server
         self._client = imaplib.IMAP4_SSL(self.host, self.port)
+        self._connected = True
 
     def close(self):
-        log.info('Logging out...')
+        assert self._connected
+
+        log.debug('Logging out...')
         self._client.logout()
+        self._connected = False
+        self._authenticated = False
 
     def authenticate(self, username, password):
         """
@@ -184,6 +192,8 @@ class GmailClient(object):
         username : str
         password : str
         """
+        assert self._connected
+        
         # Determine authentication method
         if 'AUTH=CRAM-MD5' in self._client.capabilities:
             # Prefer CRAM-MD5 if supported
@@ -196,7 +206,7 @@ class GmailClient(object):
         try:
             login_method(username, password)
             self._authenticated = True
-            log.info('Logged in as %s' % username)
+            log.debug('Logged in as %s' % username)
 
         except imaplib.IMAP4.error, ex:
             # Probably a bad password
@@ -212,9 +222,11 @@ class GmailClient(object):
         """
         Opens a mailbox named :mailbox:, returning a MailboxIterator.
         """
-        return iter(MailboxIterator(self._client, mailbox))
+        assert self.is_authenticated
 
-    def save_mailbox(self, mailbox, output_path, resume=True):
+        return MailboxIterator(self._client, mailbox)
+
+    def save_mailbox(self, mailbox, output_path, progress_updated=None):
         """
         Downloads and saves email messages in a :mailbox: as *.eml files in :output_path: directory.
 
@@ -224,34 +236,43 @@ class GmailClient(object):
             Name of the mailbox to save.
         output_path : str
             Directory to save *.eml files to.
-        resume : bool
-            Allow resuming of interrupted downloads?
         """
+        assert self.is_authenticated
+        
         # Iterate messages
         download_count = 0
-        it = self.iter_mailbox(mailbox)
-        for message_key, raw_message in it:
-
-            # Determine file name (should be unique after multiple runs)
-            email_file = os.path.join(output_path, '%s.eml' % message_key)
-            if resume and os.path.exists(email_file) and os.stat(email_file).st_size > 0:
-                log.debug('Skipping existing %s...' % email_file)
-                download_count += 1
-                continue
+        mailbox_iterator = self.iter_mailbox(mailbox)
+        for message_key, raw_message in mailbox_iterator:
 
             # Write eml file
+            email_file = os.path.join(output_path, '%s.eml' % message_key)
             with open(email_file, 'w+') as f:
                 f.write(raw_message)
 
             download_count += 1
-            percent_complete = download_count / (it.total_messages / 100.0)
-            log.info('%s - Downloaded message %s (%.2f%% complete)' % (
-                     mailbox, message_key, percent_complete))
+            percent_complete = download_count / (mailbox_iterator.total_messages / 100.0)
+            log.debug('%s - Downloaded message %s (%.2f%% complete)' % (
+                      mailbox, message_key, percent_complete))
+            if progress_updated is not None:
+                progress_updated(message_key, percent_complete)
 
 
 def ensure_dir_exists(path):
     if not os.path.exists(path):
         os.mkdir(path)
+
+
+def update_progress(percent, prefix=None):
+    max_bars = 10
+    bars = ('#' * int(math.floor(percent / max_bars))).ljust(max_bars, ' ')
+
+    if prefix is None:
+        prefix_str = ''
+    else:
+        prefix_str = prefix + ' '
+
+    sys.stdout.write('\r%s[%s] %.2f%% ' % (prefix_str, bars, percent))
+    sys.stdout.flush()
 
 
 def main():
@@ -274,7 +295,7 @@ def main():
 
     # Init logging
     logging.basicConfig(
-        level=logging.DEBUG if args['debug'] else logging.INFO,
+        level=logging.DEBUG if args['debug'] else logging.WARN,
         format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s',
         datefmt='%m-%d %H:%M')
 
@@ -302,22 +323,27 @@ def main():
 
                 # Determine download path
                 if label == DEFAULT_LABEL:
-                    label_path = 'inbox'
+                    label_path = 'All Mail'
                 else:
                     label_path = label
                 label_output_path = os.path.join(output_path, label_path)
                 ensure_dir_exists(label_output_path)
 
-                client.save_mailbox(label, label_output_path)
+                client.save_mailbox(label, label_output_path, 
+                                    progress_updated=lambda key, percent: \
+                                        update_progress(percent, label_path + ' ' + key))
+
+                sys.stdout.write('\n')
 
             sys.exit(SUCCESS)
 
     except KeyboardInterrupt, ex:
+        sys.stdout.write('\n')
         if args['debug']:
             # Full stack trace is useful
             raise ex
         else:
-            log.warn('^C pressed. Terminating...')
+            print('^C pressed. Terminating...')
 
     sys.exit(FAILURE)
 
