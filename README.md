@@ -27,7 +27,8 @@ Download all email messages labeled "foo" and "bar" into their own subfolders:
 To get started, use the `GmailClient` class in a `with` statement, authenticate it, then iterate any mailbox (label) you'd like.
 The `GmailClient` is a simple wrapper around the IMAP4 client.
 
-	import gmailbackup
+	from gmailbackup import GmailClient
+	
 	with GmailClient() as client:
 		client.authentiate('me@gmail.com', 'mypassword')
 		client.save_mailbox('Some Label', 'path/to/downloads')

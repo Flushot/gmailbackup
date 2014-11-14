@@ -19,6 +19,7 @@ setup(
 
     author='Chris Lyon',
     author_email='flushot@gmail.com',
+    url='https://github.com/Flushot/gmailbackup',
 
     description='Gmail Backup',
     long_description=open('README.md').read(),
@@ -27,9 +28,11 @@ setup(
         'Intended Audience :: System Administrators'
     ],
     
-    scripts=[
-        'gmailbackup'
-    ],
+    entry_points={
+        'console_scripts': [
+            'gmailbackup=gmailbackup:main'
+        ]
+    },
 
     install_requires=[
         'argparse'

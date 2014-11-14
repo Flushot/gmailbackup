@@ -283,7 +283,7 @@ def main():
         password = getpass.getpass('Password for %s: ' % username)
         if not password:
             print('Password is required!', file=sys.stderr)
-            return 1
+            sys.exit(FAILURE)
 
     # Directory *.eml files are stored in
     output_path = args['output_path']
@@ -307,7 +307,7 @@ def main():
 
                 client.save_mailbox(label, label_output_path)
 
-            return SUCCESS
+            sys.exit(SUCCESS)
 
     except KeyboardInterrupt, ex:
         if args['debug']:
@@ -316,8 +316,8 @@ def main():
         else:
             log.warn('^C pressed. Terminating...')
 
-    return FAILURE
+    sys.exit(FAILURE)
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    main()
