@@ -92,14 +92,14 @@ class MailboxIterator(object):
 
     def key(self, raw_message):
         """
-        Parse real message ID from message.
-        Using a SHA-256 hash because message IDs may contain chars incompatible with filesystem paths.
+        SHA-256 hash of the entire email message.
+        Previous method of hashing the Message-ID was flawed because it may not be present in all cases.
         """
         if self.format != DEFAULT_FORMAT:
             raise ValueError('key function must be set if format is not default')
 
-        message = email.message_from_string(raw_message)
-        return hashlib.sha256(message['Message-ID']).hexdigest()
+        #message = email.message_from_string(raw_message)
+        return hashlib.sha256(raw_message).hexdigest()
 
     def close(self):
         """
