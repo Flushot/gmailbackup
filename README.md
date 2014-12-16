@@ -16,11 +16,11 @@ You can install dependencies using this command:
 
 Download all email messages into the "email" directory:
 
-    gmailbackup -u <username> -p <password>
+    ./gmailbackup.py -u <username> -p <password>
 
 Download all email messages labeled "foo" and "bar" into their own subdirectories under "mydir":
 
-    gmailbackup -u <username> -p <password> -l foo,bar -o mydir
+    ./gmailbackup.py -u <username> -p <password> -l foo,bar -o mydir
 
 ## Python Usage
 
