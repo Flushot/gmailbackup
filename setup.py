@@ -11,11 +11,9 @@ if version < '2.2.3':
     DistributionMetadata.classifiers = None
     DistributionMetadata.download_url = None
 
-from gmailbackup import __version__ as version
-
 setup(
     name='gmailbackup',
-    version=version,
+    version='1.0.2',
 
     author='Chris Lyon',
     author_email='flushot@gmail.com',
