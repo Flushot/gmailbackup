@@ -1,6 +1,6 @@
 # Gmail Backup
 
-![download counter](https://img.shields.io/pypi/dm/gmailbackup.svg)
+[![download counter](https://img.shields.io/pypi/dm/gmailbackup.svg)](https://crate.io/packages/gmailbackup/)
 
 This is a small command-line tool that backs up your Gmail.
 
